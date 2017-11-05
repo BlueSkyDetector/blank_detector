@@ -18,7 +18,8 @@ def get_DPMS_state():
     Display = libXext.XOpenDisplay(0)
     dummy1_i_p = ctypes.create_string_buffer(8)
     dummy2_i_p = ctypes.create_string_buffer(8)
-    if libXext.DPMSQueryExtension(Display, dummy1_i_p, dummy2_i_p)\
+    if Display\
+        and libXext.DPMSQueryExtension(Display, dummy1_i_p, dummy2_i_p)\
         and libXext.DPMSCapable(Display):
             onoff_p = ctypes.create_string_buffer(1)
             state_p = ctypes.create_string_buffer(2)
