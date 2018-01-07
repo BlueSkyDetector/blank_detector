@@ -1,6 +1,6 @@
 # blank_detector
 
-A tool to detect blank screen by DPMS and run commands.
+A tool to detect blank screen by DPMS and run commands only when the screen is blank.
 
 ## Requirement
 
