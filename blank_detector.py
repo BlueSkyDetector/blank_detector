@@ -22,7 +22,45 @@ STREAM_TYPE_STDOUT = 'stdout'
 STREAM_TYPE_STDERR = 'stderr'
 
 
-class DpmsDetector(object):
+class DisplayDetector(object):
+    def __init__(self, display):
+        pass
+
+    def is_idle(self):
+        ret = False
+        return ret
+
+
+class XscreensaverDetector(DisplayDetector):
+    def __init__(self, display):
+        self.display = display
+        self._last_status = False
+
+    def is_idle(self):
+        ret = False
+        p = subprocess.run(['xscreensaver-command', '-time'],
+                           stdout=subprocess.PIPE)
+        screen_status = p.stdout.decode()
+        if screen_status.find('screen non-blanked since') >= 0:
+            ret = False
+        else:
+            ret = True
+        if self._last_status != ret:
+            self._last_status = ret
+            if ret:
+                logger.info(
+                    'xscreensaver status of \'%s\' is detected'
+                    ' as [blanked]'
+                    % self.display)
+            else:
+                logger.info(
+                    'xscreensaver status of \'%s\' is detected'
+                    ' as [non-blanked]'
+                    % self.display)
+        return ret
+
+
+class DpmsDetector(DisplayDetector):
     ctypes.cdll.LoadLibrary('libXext.so')
     __libXext = ctypes.CDLL('libXext.so')
     DPMSFAIL = -1
@@ -197,6 +235,13 @@ def main():
                         action='store',
                         required=True,
                         help='Set a command to execute')
+    parser.add_argument('-m',
+                        '--module',
+                        action='store',
+                        required=True,
+                        choices=['DpmsDetector', 'XscreensaverDetector'],
+                        default='DpmsDetector',
+                        help='Select detector module for display status')
     parser.add_argument('-l',
                         '--log',
                         action='store',
@@ -211,7 +256,8 @@ def main():
 
     logger.info('#' * 80)
     logger.info('############# \'%s\' started #############' % __file__)
-    display = DpmsDetector(args.display)
+    display_detector_class = globals()[args.module]
+    display = display_detector_class(args.display)
     task = TaskController(args.command)
     try:
         while True:
