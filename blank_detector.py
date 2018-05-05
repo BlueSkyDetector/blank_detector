@@ -1,12 +1,14 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import ctypes
 import struct
-from logging import getLogger, StreamHandler, FileHandler, Formatter, WARN, INFO, DEBUG
+from logging import getLogger, StreamHandler, FileHandler, Formatter, INFO
 import subprocess
 import select
-import multiprocessing
+import threading
 import time
+import os
+import signal
 
 logger = getLogger(__name__)
 formatter = Formatter('%(asctime)s - %(levelname)s: %(message)s',
@@ -25,6 +27,9 @@ DPMSModeOn = 0
 DPMSModeStandby = 1
 DPMSModeSuspend = 2
 DPMSModeOff = 3
+
+STREAM_TYPE_STDOUT = 'stdout'
+STREAM_TYPE_STDERR = 'stderr'
 
 
 def get_DPMS_state(display_name_in_byte_string=b':0'):
@@ -50,9 +55,46 @@ def get_DPMS_state(display_name_in_byte_string=b':0'):
     return state
 
 
+class Worker(threading.Thread):
+    def __init__(self, cmd, func_for_stdout, func_for_stderr, **kwargs):
+        threading.Thread.__init__(self, **kwargs)
+        self.daemon = True
+        self.cmd = cmd
+        self.func_for_stdout = func_for_stdout
+        self.func_for_stderr = func_for_stderr
+        self.subproc = None
+
+    def run(self):
+        self.subproc = subprocess.Popen(self.cmd,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        shell=True,
+                                        universal_newlines=True,
+                                        preexec_fn=os.setsid)
+
+        def getfd(s):
+            return s.fileno()
+        while True:
+            reads = [getfd(self.subproc.stdout), getfd(self.subproc.stderr)]
+            ret = select.select(reads, [], [])
+
+            for fd in ret[0]:
+                if fd == getfd(self.subproc.stdout):
+                    read = self.subproc.stdout.readline()
+                    self.func_for_stdout(read, STREAM_TYPE_STDOUT)
+                if fd == getfd(self.subproc.stderr):
+                    read = self.subproc.stderr.readline()
+                    self.func_for_stderr(read, STREAM_TYPE_STDERR)
+
+            if self.subproc.poll() is not None:
+                break
+
+    def terminate(self):
+        os.killpg(os.getpgid(self.subproc.pid), signal.SIGTERM)
+        self.subproc.terminate()
+
+
 class TaskController(object):
-    STREAM_TYPE_STDOUT = 'stdout'
-    STREAM_TYPE_STDERR = 'stderr'
 
     def __init__(self,
                  cmd,
@@ -72,32 +114,10 @@ class TaskController(object):
     def default_func_for_stream(self, cmd_output, stream_type):
         if cmd_output == '':
             return
-        elif stream_type == self.STREAM_TYPE_STDOUT:
+        elif stream_type == STREAM_TYPE_STDOUT:
             logger.info('STDOUT: ' + cmd_output.rstrip('\r\n'))
-        elif stream_type == self.STREAM_TYPE_STDERR:
+        elif stream_type == STREAM_TYPE_STDERR:
             logger.warning('STDERR: ' + cmd_output.rstrip('\r\n'))
-
-    def _worker(self):
-        proc = subprocess.Popen(self.cmd,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                shell=True, universal_newlines=True)
-
-        def getfd(s):
-            return s.fileno()
-        while True:
-            reads = [getfd(proc.stdout), getfd(proc.stderr)]
-            ret = select.select(reads, [], [])
-
-            for fd in ret[0]:
-                if fd == getfd(proc.stdout):
-                    read = proc.stdout.readline()
-                    self.func_for_stdout(read, self.STREAM_TYPE_STDOUT)
-                if fd == getfd(proc.stderr):
-                    read = proc.stderr.readline()
-                    self.func_for_stderr(read, self.STREAM_TYPE_STDERR)
-
-            if proc.poll() is not None:
-                break
 
     def is_running(self):
         return self.__is_running
@@ -105,8 +125,9 @@ class TaskController(object):
     def start(self):
         logger.info('Starting \'%s\'...' % self.cmd)
         if self.__is_running is False:
-            self.__process = multiprocessing.Process(target=self._worker,
-                                                     args=[])
+            self.__process = Worker(self.cmd,
+                                    self.func_for_stdout,
+                                    self.func_for_stderr)
             self.__process.start()
             self.__is_running = True
             logger.info('Started.')
@@ -130,7 +151,8 @@ def main():
                         '--display',
                         action='store',
                         required=True,
-                        help='Specify display name in format \':0.0\'')
+                        help='For detecting display blank, '
+                             'specify target display name in format \':0.0\'')
     parser.add_argument('-c',
                         '--command',
                         action='store',
@@ -145,8 +167,10 @@ def main():
         file_handler = FileHandler(args.log)
         file_handler.setFormatter(formatter)
         file_handler.setLevel(INFO)
+        logger.handlers = []
         logger.addHandler(file_handler)
 
+    logger.info('#' * 80)
     logger.info('############# \'%s\' started #############' % __file__)
     display_name_in_byte_string = args.display.encode('ascii')
     dpms_state = DPMSFAIL
@@ -157,30 +181,45 @@ def main():
             if dpms_state != new_dpms_state:
                 dpms_state = new_dpms_state
                 if dpms_state == DPMSFAIL:
-                    logger.info('DPMS state of \'%s\' is detected as [DPMSFAIL]' % args.display)
+                    logger.info(
+                        'DPMS state of \'%s\' is detected as [DPMSFAIL]'
+                        % args.display)
                     if task.is_running():
                         task.stop()
                 elif dpms_state == DPMSModeOn:
-                    logger.info('DPMS state of \'%s\' is detected as [DPMSModeOn]' % args.display)
+                    logger.info(
+                        'DPMS state of \'%s\' is detected as [DPMSModeOn]'
+                        % args.display)
                     if task.is_running():
                         task.stop()
                 elif dpms_state == DPMSModeStandby:
-                    logger.info('DPMS state of \'%s\' is detected as [DPMSModeStandby]' % args.display)
+                    logger.info(
+                        'DPMS state of \'%s\' is detected as [DPMSModeStandby]'
+                        % args.display)
                     if not task.is_running():
                         task.start()
                 elif dpms_state == DPMSModeSuspend:
-                    logger.info('DPMS state of \'%s\' is detected as [DPMSModeSuspend]' % args.display)
+                    logger.info(
+                        'DPMS state of \'%s\' is detected as [DPMSModeSuspend]'
+                        % args.display)
                     if not task.is_running():
                         task.start()
                 elif dpms_state == DPMSModeOff:
-                    logger.info('DPMS state of \'%s\' is detected as [DPMSModeOff]' % args.display)
+                    logger.info(
+                        'DPMS state of \'%s\' is detected as [DPMSModeOff]'
+                        % args.display)
                     if not task.is_running():
                         task.start()
             time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info('Keyboard Interrupted...')
     finally:
         if task.is_running():
             task.stop()
-        logger.info('############# \'%s\' terminating #############' % __file__)
+        logger.info('############# \'%s\' terminating #############'
+                    % __file__)
+        logger.info('#' * 80)
+
 
 if __name__ == '__main__':
     main()
