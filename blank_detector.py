@@ -38,8 +38,11 @@ class XscreensaverDetector(DisplayDetector):
 
     def is_idle(self):
         ret = False
+        my_env = os.environ.copy()
+        my_env['DISPLAY'] = self.display
         p = subprocess.run(['xscreensaver-command', '-time'],
-                           stdout=subprocess.PIPE)
+                           stdout=subprocess.PIPE,
+                           env=my_env)
         screen_status = p.stdout.decode()
         if screen_status.find('screen non-blanked since') >= 0:
             ret = False
@@ -222,14 +225,16 @@ class TaskController(object):
 
 
 def main():
+    default_display = os.environ["DISPLAY"]
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('-d',
                         '--display',
                         action='store',
-                        required=True,
+                        default=default_display,
                         help='For detecting display blank, '
-                             'specify target display name in format \':0.0\'')
+                             'specify target display name in format \':0.0\' '
+                             '(default is taken from $DISPLAY)')
     parser.add_argument('-c',
                         '--command',
                         action='store',
@@ -238,10 +243,10 @@ def main():
     parser.add_argument('-m',
                         '--module',
                         action='store',
-                        required=True,
                         choices=['DpmsDetector', 'XscreensaverDetector'],
                         default='DpmsDetector',
-                        help='Select detector module for display status')
+                        help='Select detector module for display status '
+                             '(default: DpmsDetector)')
     parser.add_argument('-l',
                         '--log',
                         action='store',
@@ -255,7 +260,8 @@ def main():
         logger.addHandler(file_handler)
 
     logger.info('#' * 80)
-    logger.info('############# \'%s\' started #############' % __file__)
+    logger.info('############# \'%s\' (DISPLAY %s) started #############'
+                % (__file__, args.display))
     display_detector_class = globals()[args.module]
     display = display_detector_class(args.display)
     task = TaskController(args.command)
