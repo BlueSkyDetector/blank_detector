@@ -18,41 +18,80 @@ handler.setFormatter(formatter)
 handler.setLevel(INFO)
 logger.setLevel(INFO)
 logger.addHandler(handler)
-
-ctypes.cdll.LoadLibrary('libXext.so')
-libXext = ctypes.CDLL('libXext.so')
-
-DPMSFAIL = -1
-DPMSModeOn = 0
-DPMSModeStandby = 1
-DPMSModeSuspend = 2
-DPMSModeOff = 3
-
 STREAM_TYPE_STDOUT = 'stdout'
 STREAM_TYPE_STDERR = 'stderr'
 
 
-def get_DPMS_state(display_name_in_byte_string=b':0'):
-    state = DPMSFAIL
-    if not isinstance(display_name_in_byte_string, bytes):
-        raise TypeError
-    display_name = ctypes.c_char_p()
-    display_name.value = display_name_in_byte_string
-    libXext.XOpenDisplay.restype = ctypes.c_void_p
-    display = ctypes.c_void_p(libXext.XOpenDisplay(display_name))
-    dummy1_i_p = ctypes.create_string_buffer(8)
-    dummy2_i_p = ctypes.create_string_buffer(8)
-    if display.value:
-        if libXext.DPMSQueryExtension(display, dummy1_i_p, dummy2_i_p)\
-           and libXext.DPMSCapable(display):
-            onoff_p = ctypes.create_string_buffer(1)
-            state_p = ctypes.create_string_buffer(2)
-            if libXext.DPMSInfo(display, state_p, onoff_p):
-                onoff = struct.unpack('B', onoff_p.raw)[0]
-                if onoff:
-                    state = struct.unpack('H', state_p.raw)[0]
-        libXext.XCloseDisplay(display)
-    return state
+class DpmsDetector(object):
+    ctypes.cdll.LoadLibrary('libXext.so')
+    __libXext = ctypes.CDLL('libXext.so')
+    DPMSFAIL = -1
+    DPMSModeOn = 0
+    DPMSModeStandby = 1
+    DPMSModeSuspend = 2
+    DPMSModeOff = 3
+
+    def __init__(self, display):
+        self.display = display
+        self.display_name_in_byte_string = self.display.encode('ascii')
+        self.dpms_state = self.DPMSFAIL
+
+    def get_DPMS_state(self, display_name_in_byte_string=b':0'):
+        state = self.DPMSFAIL
+        if not isinstance(display_name_in_byte_string, bytes):
+            raise TypeError
+        display_name = ctypes.c_char_p()
+        display_name.value = display_name_in_byte_string
+        self.__libXext.XOpenDisplay.restype = ctypes.c_void_p
+        display = ctypes.c_void_p(self.__libXext.XOpenDisplay(display_name))
+        dummy1_i_p = ctypes.create_string_buffer(8)
+        dummy2_i_p = ctypes.create_string_buffer(8)
+        if display.value:
+            if self.__libXext.DPMSQueryExtension(display,
+                                                 dummy1_i_p,
+                                                 dummy2_i_p)\
+               and self.__libXext.DPMSCapable(display):
+                onoff_p = ctypes.create_string_buffer(1)
+                state_p = ctypes.create_string_buffer(2)
+                if self.__libXext.DPMSInfo(display, state_p, onoff_p):
+                    onoff = struct.unpack('B', onoff_p.raw)[0]
+                    if onoff:
+                        state = struct.unpack('H', state_p.raw)[0]
+            self.__libXext.XCloseDisplay(display)
+        return state
+
+    def is_idle(self):
+        ret = False
+        new_dpms_state = self.get_DPMS_state(self.display_name_in_byte_string)
+        if self.dpms_state != new_dpms_state:
+            self.dpms_state = new_dpms_state
+            if self.dpms_state == self.DPMSFAIL:
+                logger.info(
+                    'DPMS state of \'%s\' is detected as [DPMSFAIL]'
+                    % self.display)
+            elif self.dpms_state == self.DPMSModeOn:
+                logger.info(
+                    'DPMS state of \'%s\' is detected as [DPMSModeOn]'
+                    % self.display)
+            elif self.dpms_state == self.DPMSModeStandby:
+                logger.info(
+                    'DPMS state of \'%s\' is detected as [DPMSModeStandby]'
+                    % self.display)
+            elif self.dpms_state == self.DPMSModeSuspend:
+                logger.info(
+                    'DPMS state of \'%s\' is detected as [DPMSModeSuspend]'
+                    % self.display)
+            elif self.dpms_state == self.DPMSModeOff:
+                logger.info(
+                    'DPMS state of \'%s\' is detected as [DPMSModeOff]'
+                    % self.display)
+        if self.dpms_state in [self.DPMSFAIL, self.DPMSModeOn]:
+            ret = False
+        elif self.dpms_state in [self.DPMSModeStandby,
+                                 self.DPMSModeSuspend,
+                                 self.DPMSModeOff]:
+            ret = True
+        return ret
 
 
 class Worker(threading.Thread):
@@ -172,44 +211,16 @@ def main():
 
     logger.info('#' * 80)
     logger.info('############# \'%s\' started #############' % __file__)
-    display_name_in_byte_string = args.display.encode('ascii')
-    dpms_state = DPMSFAIL
+    display = DpmsDetector(args.display)
     task = TaskController(args.command)
     try:
         while True:
-            new_dpms_state = get_DPMS_state(display_name_in_byte_string)
-            if dpms_state != new_dpms_state:
-                dpms_state = new_dpms_state
-                if dpms_state == DPMSFAIL:
-                    logger.info(
-                        'DPMS state of \'%s\' is detected as [DPMSFAIL]'
-                        % args.display)
-                    if task.is_running():
-                        task.stop()
-                elif dpms_state == DPMSModeOn:
-                    logger.info(
-                        'DPMS state of \'%s\' is detected as [DPMSModeOn]'
-                        % args.display)
-                    if task.is_running():
-                        task.stop()
-                elif dpms_state == DPMSModeStandby:
-                    logger.info(
-                        'DPMS state of \'%s\' is detected as [DPMSModeStandby]'
-                        % args.display)
-                    if not task.is_running():
-                        task.start()
-                elif dpms_state == DPMSModeSuspend:
-                    logger.info(
-                        'DPMS state of \'%s\' is detected as [DPMSModeSuspend]'
-                        % args.display)
-                    if not task.is_running():
-                        task.start()
-                elif dpms_state == DPMSModeOff:
-                    logger.info(
-                        'DPMS state of \'%s\' is detected as [DPMSModeOff]'
-                        % args.display)
-                    if not task.is_running():
-                        task.start()
+            if display.is_idle():
+                if not task.is_running():
+                    task.start()
+            else:
+                if task.is_running():
+                    task.stop()
             time.sleep(1)
     except KeyboardInterrupt:
         logger.info('Keyboard Interrupted...')
