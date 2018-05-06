@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 import ctypes
 import struct
@@ -40,11 +40,14 @@ class XscreensaverDetector(DisplayDetector):
         ret = False
         my_env = os.environ.copy()
         my_env['DISPLAY'] = self.display
-        p = subprocess.run(['xscreensaver-command', '-time'],
-                           stdout=subprocess.PIPE,
-                           env=my_env)
-        screen_status = p.stdout.decode()
-        if screen_status.find('screen non-blanked since') >= 0:
+        try:
+            screen_status = subprocess.check_output(
+                                    ['xscreensaver-command', '-time'],
+                                    env=my_env)
+        except subprocess.CalledProcessError:
+            logger.warning('"xscreensaver-command -time" is failed')
+            return ret
+        if screen_status.decode().find('screen non-blanked since') >= 0:
             ret = False
         else:
             ret = True
@@ -180,7 +183,6 @@ class TaskController(object):
                  cmd,
                  func_for_stdout=None,
                  func_for_stderr=None):
-        self.__is_running = False
         self.cmd = cmd
         if func_for_stdout is None:
             self.func_for_stdout = self.default_func_for_stream
@@ -190,6 +192,9 @@ class TaskController(object):
             self.func_for_stderr = self.default_func_for_stream
         else:
             self.func_for_stderr = func_for_stderr
+        self.__process = Worker(self.cmd,
+                                self.func_for_stdout,
+                                self.func_for_stderr)
 
     def default_func_for_stream(self, cmd_output, stream_type):
         if cmd_output == '':
@@ -200,25 +205,23 @@ class TaskController(object):
             logger.warning('STDERR: ' + cmd_output.rstrip('\r\n'))
 
     def is_running(self):
-        return self.__is_running
+        return self.__process.is_alive()
 
     def start(self):
         logger.info('Starting \'%s\'...' % self.cmd)
-        if self.__is_running is False:
+        if self.__process.is_alive() is False:
             self.__process = Worker(self.cmd,
                                     self.func_for_stdout,
                                     self.func_for_stderr)
             self.__process.start()
-            self.__is_running = True
             logger.info('Started.')
         else:
             logger.info('Already started. Nothing to do.')
 
     def stop(self):
         logger.info('Stopping \'%s\'...' % self.cmd)
-        if self.__is_running is True:
+        if self.__process.is_alive() is True:
             self.__process.terminate()
-            self.__is_running = False
             logger.info('Stopped.')
         else:
             logger.info('Already stopped. Nothing to do.')
